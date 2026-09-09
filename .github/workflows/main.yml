@@ -9,156 +9,44 @@ on:
 
 jobs:
   build:
-    name: Build DOLIA (Android APK & Server)
+    name: Build DOLIA
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 1. Ekstrak file ZIP (Mendukung nama dengan spasi/kurung seperti 'untitled (1).zip')
       - name: Extract Project ZIP
         run: |
-          python3 -c "
-          import glob, zipfile, os
-          zip_files = glob.glob('**/*.zip', recursive=True)
-          if zip_files:
-            for zf in zip_files:
-              print(f'Mengekstrak file: {zf}')
-              try:
-                with zipfile.ZipFile(zf, 'r') as z:
-                  z.extractall('.')
-                print(f'Berhasil mengekstrak {zf}')
-              except Exception as e:
-                print(f'Gagal mengekstrak {zf}: {e}')
-          else:
-            print('Tidak ada file ZIP yang ditemukan.')
-          "
+          find . -maxdepth 2 -iname "*.zip" -exec unzip -q -o "{}" -d . \;
 
-      # 2. Pastikan file konfigurasi Gradle Android tersedia lengkap
       - name: Ensure Android Gradle Configuration
         run: |
-          # Buat settings.gradle.kts jika belum ada
           if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
-            echo "Membuat settings.gradle.kts otomatis..."
-            cat << 'EOF' > settings.gradle.kts
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-rootProject.name = "DOLIA"
-include(":app")
-EOF
+            printf 'pluginManagement {\n    repositories {\n        google()\n        mavenCentral()\n        gradlePluginPortal()\n    }\n}\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n    repositories {\n        google()\n        mavenCentral()\n    }\n}\nrootProject.name = "DOLIA"\ninclude(":app")\n' > settings.gradle.kts
           fi
 
-          # Buat root build.gradle.kts jika belum ada
           if [ ! -f build.gradle.kts ]; then
-            echo "Membuat root build.gradle.kts otomatis..."
-            cat << 'EOF' > build.gradle.kts
-plugins {
-    id("com.android.application") version "8.8.0" apply false
-    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
-    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
-}
-EOF
+            printf 'plugins {\n    id("com.android.application") version "8.8.0" apply false\n    id("org.jetbrains.kotlin.android") version "2.0.21" apply false\n    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false\n}\n' > build.gradle.kts
           fi
 
-          # Buat gradle.properties jika belum ada
           if [ ! -f gradle.properties ]; then
-            echo "Membuat gradle.properties..."
-            cat << 'EOF' > gradle.properties
-org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-android.useAndroidX=true
-android.nonTransitiveRClass=true
-org.gradle.configuration-cache=false
-EOF
+            printf 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nandroid.nonTransitiveRClass=true\norg.gradle.configuration-cache=false\n' > gradle.properties
           else
-            sed -i 's/-Xmx4g/-Xmx2048m/g' gradle.properties
-            sed -i 's/org.gradle.configuration-cache=true/org.gradle.configuration-cache=false/g' gradle.properties
+            sed -i 's/-Xmx4g/-Xmx2048m/g' gradle.properties || true
+            sed -i 's/org.gradle.configuration-cache=true/org.gradle.configuration-cache=false/g' gradle.properties || true
           fi
 
-          # Buat app/build.gradle.kts jika belum ada
           if [ ! -f app/build.gradle.kts ]; then
-            echo "Membuat app/build.gradle.kts otomatis..."
             mkdir -p app
-            cat << 'EOF' > app/build.gradle.kts
-plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
-}
-
-android {
-    namespace = "com.example"
-    compileSdk = 35
-
-    defaultConfig {
-        applicationId = "com.example"
-        minSdk = 24
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
-
-        buildConfigField("String", "SUPABASE_URL", "\"https://dummy.supabase.co\"")
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"dummy_anon_key\"")
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-        }
-        debug {
-            isMinifyEnabled = false
-        }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-    }
-    kotlinOptions {
-        jvmTarget = "21"
-    }
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-}
-
-dependencies {
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
-    implementation("androidx.activity:activity-compose:1.9.3")
-    implementation(platform("androidx.compose:compose-bom:2024.11.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    debugImplementation("androidx.compose.ui:ui-tooling")
-}
-EOF
+            printf 'plugins {\n    id("com.android.application")\n    id("org.jetbrains.kotlin.android")\n    id("org.jetbrains.kotlin.plugin.compose")\n}\n\nandroid {\n    namespace = "com.example"\n    compileSdk = 35\n\n    defaultConfig {\n        applicationId = "com.example"\n        minSdk = 24\n        targetSdk = 35\n        versionCode = 1\n        versionName = "1.0.0"\n        buildConfigField("String", "SUPABASE_URL", "\\"https://dummy.supabase.co\\"")\n        buildConfigField("String", "SUPABASE_ANON_KEY", "\\"dummy_anon_key\\"")\n    }\n    buildTypes {\n        release {\n            isMinifyEnabled = false\n        }\n        debug {\n            isMinifyEnabled = false\n        }\n    }\n    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_21\n        targetCompatibility = JavaVersion.VERSION_21\n    }\n    kotlinOptions {\n        jvmTarget = "21"\n    }\n    buildFeatures {\n        compose = true\n        buildConfig = true\n    }\n}\n\ndependencies {\n    implementation("androidx.core:core-ktx:1.15.0")\n    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")\n    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")\n    implementation("androidx.activity:activity-compose:1.9.3")\n    implementation(platform("androidx.compose:compose-bom:2024.11.00"))\n    implementation("androidx.compose.ui:ui")\n    implementation("androidx.compose.ui:ui-graphics")\n    implementation("androidx.compose.ui:ui-tooling-preview")\n    implementation("androidx.compose.material3:material3")\n    implementation("androidx.compose.material:material-icons-extended")\n    implementation("com.squareup.okhttp3:okhttp:4.12.0")\n    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")\n    debugImplementation("androidx.compose.ui:ui-tooling")\n}\n' > app/build.gradle.kts
           fi
 
-      # 3. Setup Node.js v20
       - name: Set up Node.js v20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 4. Install Node.js dependencies jika ada
       - name: Install Node.js Dependencies
         run: |
           if [ -f package.json ]; then
@@ -168,18 +56,15 @@ EOF
             cd server && (npm install --silent || npm install) && cd ..
           fi
 
-      # 5. Set up Java JDK 21
       - name: Set up Java JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      # 6. Set up Android SDK
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # 7. Konfigurasi SDK & Lisensi
       - name: Setup Android SDK Environment
         run: |
           yes | sdkmanager --licenses || true
@@ -200,19 +85,15 @@ EOF
             cp .env app/.env 2>/dev/null || true
           fi
 
-      # 8. Setup Gradle 8.11.1
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      # 9. Build Android APK
       - name: Build Android APK
         run: |
-          echo "Memulai proses build Android..."
           gradle assembleDebug --no-daemon --no-configuration-cache
 
-      # 10. Upload APK Artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         if: always()
