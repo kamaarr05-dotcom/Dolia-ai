@@ -2,114 +2,268 @@ name: Build DOLIA APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
   pull_request:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
     inputs:
       supabase_url:
         description: 'Supabase URL (contoh: https://xyz.supabase.co)'
         required: false
+        type: string
         default: ''
+
       supabase_anon_key:
         description: 'Supabase Anon Key'
         required: false
+        type: string
         default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dolia-apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+  GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2'
 
 jobs:
   build:
     name: Build Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
 
-      # 1. Ekstrak ZIP secara otomatis jika Anda mengunggah arsip .zip ke repository
-      - name: Extract Zip (if uploaded as archive)
+      # =========================================================
+      # 1. CHECKOUT
+      # =========================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      # =========================================================
+      # 2. EKSTRAK ZIP JIKA REPOSITORY BERISI FILE ZIP
+      # =========================================================
+      - name: Extract ZIP project if needed
+        shell: bash
         run: |
-          ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
-          if [ -n "$ZIP_FILE" ]; then
-            echo "Menemukan arsip zip: $ZIP_FILE. Mengekstrak..."
-            unzip -q -o "$ZIP_FILE" -d .
-            if [ ! -d "app" ]; then
-              NESTED_APP=$(find . -maxdepth 2 -name "app" -type d | head -n 1)
-              if [ -n "$NESTED_APP" ]; then
-                NESTED_DIR=$(dirname "$NESTED_APP")
-                echo "Memindahkan file dari $NESTED_DIR ke root..."
-                cp -rn "$NESTED_DIR"/* . || true
-              fi
-            fi
+          set -euo pipefail
+
+          ZIP_FILE="$(find . -maxdepth 2 -type f -name '*.zip' ! -path './.git/*' | head -n 1 || true)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "Tidak ada ZIP project."
+            echo "Menggunakan source yang sudah diekstrak."
+            exit 0
           fi
 
-      # 2. Setup Node.js v20
-      - name: Set up Node.js v20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+          echo "ZIP ditemukan: $ZIP_FILE"
 
-      # 3. Setup Java JDK 21
-      - name: Set up Java JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-          cache: 'gradle'
+          TMP_DIR="$(mktemp -d)"
 
-      # 4. Setup Gradle 9.3.1 (Memenuhi syarat minimal AGP 9.1.1)
+          unzip -q -o "$ZIP_FILE" -d "$TMP_DIR"
+
+          PROJECT_ROOT="$(
+            find "$TMP_DIR" \
+              -type f \
+              \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) \
+              -print -quit |
+              xargs -r dirname
+          )"
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "ERROR: Root project Gradle tidak ditemukan di dalam ZIP."
+            find "$TMP_DIR" -maxdepth 3 -type f | sort | head -n 100
+            exit 1
+          fi
+
+          if [ ! -f "$PROJECT_ROOT/settings.gradle.kts" ] &&
+             [ ! -f "$PROJECT_ROOT/settings.gradle" ]; then
+            echo "ERROR: settings.gradle(.kts) tidak ditemukan."
+            exit 1
+          fi
+
+          echo "Root project hasil ekstraksi:"
+          echo "$PROJECT_ROOT"
+
+          rsync -a \
+            --exclude '.git/' \
+            "$PROJECT_ROOT/" \
+            ./
+
+          rm -rf "$TMP_DIR"
+
+      # =========================================================
+      # 3. CEK STRUKTUR PROJECT
+      # =========================================================
+      - name: Verify Android/Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "settings.gradle.kts" ] &&
+             [ ! -f "settings.gradle" ]; then
+            echo "ERROR: settings.gradle(.kts) tidak ditemukan."
+            exit 1
+          fi
+
+          if [ ! -d "app" ]; then
+            echo "ERROR: folder app/ tidak ditemukan."
+            exit 1
+          fi
+
+          echo "Project Android ditemukan."
+          echo "Isi root:"
+          ls -la
+
+      # =========================================================
+      # 4. JAVA 17
+      # AGP 9.1.1 menggunakan JDK 17
+      # =========================================================
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # =========================================================
+      # 5. GRADLE 9.3.1
+      # Sesuai AGP 9.1.1
+      # =========================================================
       - name: Set up Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '9.3.1'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
 
-      # 5. Setujui Lisensi Android SDK & Siapkan SDK 36
-      - name: Accept Android SDK Licenses & Prepare SDK 36
+      # =========================================================
+      # 6. BUAT GRADLE WRAPPER JIKA BELUM ADA
+      # =========================================================
+      - name: Create or validate Gradle Wrapper
+        shell: bash
         run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" 2>/dev/null || true
+          set -euo pipefail
 
-      # 6. Siapkan konfigurasi Android, Keystore, dan Supabase .env
-      - name: Prepare Android Project & Supabase Config
+          if [ ! -f "gradlew" ]; then
+            echo "gradlew tidak ditemukan."
+            echo "Membuat Gradle Wrapper 9.3.1..."
+
+            gradle wrapper \
+              --gradle-version 9.3.1 \
+              --distribution-type bin
+          else
+            echo "Gradle Wrapper ditemukan."
+          fi
+
+          chmod +x gradlew
+
+          echo "Memeriksa versi Gradle:"
+          ./gradlew --version
+
+      # =========================================================
+      # 7. ANDROID SDK 36.1
+      # =========================================================
+      - name: Prepare Android SDK 36.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager tidak ditemukan:"
+            echo "$SDKMANAGER"
+            exit 1
+          fi
+
+          echo "Menerima Android SDK licenses..."
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          echo "Memasang Android SDK..."
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-36.1" \
+            "build-tools;36.1.0"
+
+      # =========================================================
+      # 8. SUPABASE ENV
+      # =========================================================
+      - name: Prepare Supabase .env
         env:
           SECRET_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SECRET_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
           INPUT_SUPABASE_URL: ${{ inputs.supabase_url }}
           INPUT_SUPABASE_ANON_KEY: ${{ inputs.supabase_anon_key }}
+
+        shell: bash
         run: |
-          mkdir -p gradle/wrapper
-          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
-          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
-          echo "distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
-          echo "networkTimeout=10000" >> gradle/wrapper/gradle-wrapper.properties
-          echo "validateDistributionUrl=true" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+          set -euo pipefail
 
-          # Siapkan .env Supabase
-          FINAL_URL="${INPUT_SUPABASE_URL:-${SECRET_SUPABASE_URL}}"
-          FINAL_KEY="${INPUT_SUPABASE_ANON_KEY:-${SECRET_SUPABASE_ANON_KEY}}"
+          FINAL_URL="${INPUT_SUPABASE_URL:-${SECRET_SUPABASE_URL:-}}"
+          FINAL_KEY="${INPUT_SUPABASE_ANON_KEY:-${SECRET_SUPABASE_ANON_KEY:-}}"
 
-          if [ -n "$FINAL_URL" ] && [ -n "$FINAL_KEY" ]; then
-            echo "Menginjeksi kredensial Supabase ke .env..."
-            printf "SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n" "$FINAL_URL" "$FINAL_KEY" > .env
-          elif [ ! -f .env ]; then
-            if [ -f .env.example ]; then
-              cp .env.example .env
-            else
-              touch .env
-            fi
+          if [ -n "$FINAL_URL" ] &&
+             [ -n "$FINAL_KEY" ]; then
+
+            printf \
+              'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
+              "$FINAL_URL" \
+              "$FINAL_KEY" \
+              > .env
+
+            echo "Supabase .env berhasil disiapkan."
+
+          elif [ -f ".env.example" ]; then
+
+            cp .env.example .env
+
+            echo "Supabase secret/input tidak tersedia."
+            echo "Menggunakan .env.example."
+
+          else
+
+            : > .env
+
+            echo "Supabase secret/input tidak tersedia."
+            echo "Membuat .env kosong."
+
           fi
 
-          # Siapkan debug.keystore (Decode base64 dengan aman)
-          if [ -f debug.keystore.base64 ]; then
-            echo "Decoding debug.keystore dari base64..."
-            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore 2>/dev/null || true
+      # =========================================================
+      # 9. DEBUG KEYSTORE
+      # =========================================================
+      - name: Prepare debug keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f "debug.keystore.base64" ]; then
+
+            echo "Decode debug.keystore..."
+
+            tr -d '\r\n ' \
+              < debug.keystore.base64 |
+              base64 -d > debug.keystore
+
           fi
 
-          # Pastikan file debug.keystore valid dan tidak 0 byte
-          if [ ! -s debug.keystore ]; then
-            echo "Membuat debug.keystore default dengan keytool..."
-            keytool -genkey -v \
+          if [ ! -s "debug.keystore" ]; then
+
+            echo "Membuat debug.keystore baru..."
+
+            keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
               -alias androiddebugkey \
@@ -118,21 +272,48 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
+
           fi
 
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-          fi
+          chmod +x gradlew
 
-      # 7. Kompilasi dan Build APK Debug
-      - name: Build Android APK
+      # =========================================================
+      # 10. BUILD APK
+      # =========================================================
+      - name: Build Android APK Debug
+        shell: bash
         run: |
-          gradle assembleDebug --no-daemon --no-configuration-cache --stacktrace
+          set -o pipefail
 
-      # 8. Upload APK ke tab Artifacts GitHub agar bisa langsung diunduh
+          ./gradlew :app:assembleDebug \
+            --no-daemon \
+            --no-configuration-cache \
+            --no-parallel \
+            --max-workers=2 \
+            --stacktrace \
+            --warning-mode all \
+            2>&1 | tee gradle-build.log
+
+      # =========================================================
+      # 11. UPLOAD APK
+      # =========================================================
       - name: Upload APK Artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: DOLIA-Debug-APK
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
           retention-days: 14
+
+      # =========================================================
+      # 12. UPLOAD LOG JIKA GAGAL
+      # =========================================================
+      - name: Upload Gradle build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DOLIA-Gradle-Log
+          path: gradle-build.log
+          if-no-files-found: warn
+          retention-days: 7
