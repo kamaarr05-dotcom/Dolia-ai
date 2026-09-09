@@ -1,4 +1,4 @@
-name: DOLIA - Build Android & Server
+name: Build DOLIA APK
 
 on:
   push:
@@ -6,100 +6,109 @@ on:
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      supabase_url:
+        description: 'Supabase URL (contoh: https://xyz.supabase.co)'
+        required: false
+        default: ''
+      supabase_anon_key:
+        description: 'Supabase Anon Key'
+        required: false
+        default: ''
 
 jobs:
   build:
-    name: Build DOLIA
+    name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Extract Project ZIP
+      # 1. Ekstrak ZIP secara otomatis jika Anda mengunggah arsip .zip ke repository
+      - name: Extract Zip (if uploaded as archive)
         run: |
-          find . -maxdepth 2 -iname "*.zip" -exec unzip -q -o "{}" -d . \;
-
-      - name: Ensure Android Gradle Configuration
-        run: |
-          if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
-            printf 'pluginManagement {\n    repositories {\n        google()\n        mavenCentral()\n        gradlePluginPortal()\n    }\n}\ndependencyResolutionManagement {\n    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n    repositories {\n        google()\n        mavenCentral()\n    }\n}\nrootProject.name = "DOLIA"\ninclude(":app")\n' > settings.gradle.kts
+          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          if [ -n "$ZIP_FILE" ]; then
+            echo "Menemukan arsip zip: $ZIP_FILE. Mengekstrak..."
+            unzip -o "$ZIP_FILE" -d .
           fi
 
-          if [ ! -f build.gradle.kts ]; then
-            printf 'plugins {\n    id("com.android.application") version "8.8.0" apply false\n    id("org.jetbrains.kotlin.android") version "2.0.21" apply false\n    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false\n}\n' > build.gradle.kts
-          fi
-
-          if [ ! -f gradle.properties ]; then
-            printf 'org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\nandroid.nonTransitiveRClass=true\norg.gradle.configuration-cache=false\n' > gradle.properties
-          else
-            sed -i 's/-Xmx4g/-Xmx2048m/g' gradle.properties || true
-            sed -i 's/org.gradle.configuration-cache=true/org.gradle.configuration-cache=false/g' gradle.properties || true
-          fi
-
-          if [ ! -f app/build.gradle.kts ]; then
-            mkdir -p app
-            printf 'plugins {\n    id("com.android.application")\n    id("org.jetbrains.kotlin.android")\n    id("org.jetbrains.kotlin.plugin.compose")\n}\n\nandroid {\n    namespace = "com.example"\n    compileSdk = 35\n\n    defaultConfig {\n        applicationId = "com.example"\n        minSdk = 24\n        targetSdk = 35\n        versionCode = 1\n        versionName = "1.0.0"\n        buildConfigField("String", "SUPABASE_URL", "\\"https://dummy.supabase.co\\"")\n        buildConfigField("String", "SUPABASE_ANON_KEY", "\\"dummy_anon_key\\"")\n    }\n    buildTypes {\n        release {\n            isMinifyEnabled = false\n        }\n        debug {\n            isMinifyEnabled = false\n        }\n    }\n    compileOptions {\n        sourceCompatibility = JavaVersion.VERSION_21\n        targetCompatibility = JavaVersion.VERSION_21\n    }\n    kotlinOptions {\n        jvmTarget = "21"\n    }\n    buildFeatures {\n        compose = true\n        buildConfig = true\n    }\n}\n\ndependencies {\n    implementation("androidx.core:core-ktx:1.15.0")\n    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")\n    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")\n    implementation("androidx.activity:activity-compose:1.9.3")\n    implementation(platform("androidx.compose:compose-bom:2024.11.00"))\n    implementation("androidx.compose.ui:ui")\n    implementation("androidx.compose.ui:ui-graphics")\n    implementation("androidx.compose.ui:ui-tooling-preview")\n    implementation("androidx.compose.material3:material3")\n    implementation("androidx.compose.material:material-icons-extended")\n    implementation("com.squareup.okhttp3:okhttp:4.12.0")\n    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")\n    debugImplementation("androidx.compose.ui:ui-tooling")\n}\n' > app/build.gradle.kts
-          fi
-
+      # 2. Setup Node.js v20
       - name: Set up Node.js v20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Install Node.js Dependencies
-        run: |
-          if [ -f package.json ]; then
-            npm install --silent || npm install
-          fi
-          if [ -d server ] && [ -f server/package.json ]; then
-            cd server && (npm install --silent || npm install) && cd ..
-          fi
-
+      # 3. Setup Java JDK 21 (Diperlukan oleh AGP 9.1.1)
       - name: Set up Java JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
+          cache: 'gradle'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup Android SDK Environment
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" || true
-
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
-          if [ -d app ]; then
-            echo "sdk.dir=$ANDROID_HOME" > app/local.properties
-          fi
-
-          if [ ! -f .env ] && [ -f .env.example ]; then
-            cp .env.example .env
-          elif [ ! -f .env ]; then
-            echo "SUPABASE_URL=https://dummy.supabase.co" > .env
-            echo "SUPABASE_ANON_KEY=dummy_anon_key" >> .env
-          fi
-          if [ -d app ]; then
-            cp .env app/.env 2>/dev/null || true
-          fi
-
-      - name: Setup Gradle
+      # 4. Setup Gradle 9.3.1 (Memenuhi syarat minimal AGP 9.1.1)
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: '9.3.1'
 
+      # 5. Siapkan konfigurasi Android dan Injeksi Supabase ke .env
+      - name: Prepare Android Project & Supabase Config
+        env:
+          SECRET_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SECRET_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          INPUT_SUPABASE_URL: ${{ inputs.supabase_url }}
+          INPUT_SUPABASE_ANON_KEY: ${{ inputs.supabase_anon_key }}
+        run: |
+          # 1. Pastikan gradle-wrapper.properties menggunakan Gradle 9.3.1
+          mkdir -p gradle/wrapper
+          cat << 'EOF' > gradle/wrapper/gradle-wrapper.properties
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+EOF
+
+          # 2. Injeksi Kredensial Supabase ke file .env
+          FINAL_URL="${INPUT_SUPABASE_URL:-${SECRET_SUPABASE_URL}}"
+          FINAL_KEY="${INPUT_SUPABASE_ANON_KEY:-${SECRET_SUPABASE_ANON_KEY}}"
+
+          if [ -n "$FINAL_URL" ] && [ -n "$FINAL_KEY" ]; then
+            echo "Menginjeksi kredensial Supabase ke .env..."
+            printf "SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n" "$FINAL_URL" "$FINAL_KEY" > .env
+          elif [ ! -f .env ]; then
+            if [ -f .env.example ]; then
+              cp .env.example .env
+            else
+              touch .env
+            fi
+          fi
+
+          # 3. Siapkan debug.keystore dari debug.keystore.base64
+          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+            echo "Decoding debug.keystore dari base64..."
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+
+          # 4. Berikan izin eksekusi jika ada script gradlew
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+          fi
+
+      # 6. Kompilasi dan Build APK Debug
       - name: Build Android APK
         run: |
-          gradle assembleDebug --no-daemon --no-configuration-cache
+          gradle assembleDebug --stacktrace
 
+      # 7. Upload APK ke tab Artifacts GitHub agar bisa langsung diunduh
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: dolia-app-debug
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            **/build/outputs/apk/debug/*.apk
+          name: DOLIA-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
