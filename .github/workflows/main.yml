@@ -9,99 +9,69 @@ on:
 
 jobs:
   build:
-    name: Build DOLIA (JDK 21 & Node.js 20)
+    name: Build DOLIA
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout Repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Ekstrak ZIP & Normalisasi Struktur Folder ke Root
-      - name: Extract ZIP and Locate Project
+      - name: Extract ZIP if present
         run: |
-          echo "=== 1. Memeriksa keberadaan file ZIP ==="
           shopt -s nullglob nocaseglob
           zip_files=( *.zip */*.zip **/*.zip )
-
           if [ ${#zip_files[@]} -gt 0 ]; then
             for zf in "${zip_files[@]}"; do
               if [ -f "$zf" ]; then
-                echo "Mengekstrak: $zf..."
                 unzip -q -o "$zf" -d .
               fi
             done
-            echo "Ekstraksi ZIP selesai."
-          else
-            echo "Tidak ditemukan file ZIP terkompresi. Menggunakan struktur repository saat ini."
           fi
 
-          echo "=== 2. Menormalisasi posisi build.gradle.kts ==="
           if [ ! -f "build.gradle.kts" ]; then
-            echo "build.gradle.kts tidak ada di root, mencari di subfolder..."
             GRADLE_PATH=$(find . -maxdepth 3 -name "build.gradle.kts" -not -path "*/app/*" | head -n 1)
             if [ -n "$GRADLE_PATH" ]; then
               TARGET_DIR=$(dirname "$GRADLE_PATH")
-              echo "Project Android ditemukan di folder: $TARGET_DIR. Memindahkan ke root..."
               shopt -s dotglob
               cp -r "$TARGET_DIR"/* .
               rm -rf "$TARGET_DIR"
             fi
           fi
 
-          echo "=== Struktur Direktori Root ==="
-          ls -la
-
-      # 3. Setup Node.js v20
       - name: Set up Node.js v20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # 4. Install Node.js dependencies jika ada
       - name: Install Node.js Dependencies
         run: |
-          echo "Versi Node: $(node -v)"
-          echo "Versi NPM: $(npm -v)"
           if [ -f package.json ]; then
             npm install --silent || npm install
           fi
           if [ -d server ] && [ -f server/package.json ]; then
-            echo "Menginstal dependensi server..."
-            cd server && npm install --silent || npm install && cd ..
+            cd server && (npm install --silent || npm install) && cd ..
           fi
 
-      # 5. Set up Java JDK 21
       - name: Set up Java JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      # 6. Set up Android SDK & Pasang Platform 36
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Configure Android SDK & Install Platform 36
+      - name: Setup Environment & Dependencies
         run: |
-          echo "Menyetujui lisensi Android SDK..."
           yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
 
-          echo "Menginstal platform android-36 dan build-tools..."
-          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" || true
-
-          echo "Mengonfigurasi local.properties..."
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           if [ -d app ]; then
             echo "sdk.dir=$ANDROID_HOME" > app/local.properties
           fi
 
-      # 7. Setup Environment (.env, google-services.json & debug.keystore)
-      - name: Setup Environment and Keystore
-        run: |
-          # 1. Setup .env
           if [ ! -f .env ] && [ -f .env.example ]; then
-            echo "Menyiapkan file .env dari .env.example..."
             cp .env.example .env
           elif [ ! -f .env ]; then
             echo "SUPABASE_URL=https://dummy.supabase.co" > .env
@@ -111,46 +81,7 @@ jobs:
             cp .env app/.env 2>/dev/null || true
           fi
 
-          # 2. Setup dummy google-services.json jika belum ada
-          if [ ! -f google-services.json ] && [ ! -f app/google-services.json ]; then
-            echo "Membuat dummy google-services.json..."
-            cat << 'EOF' > app/google-services.json
-{
-  "project_info": {
-    "project_number": "123456789012",
-    "project_id": "dolia-dummy-project",
-    "storage_bucket": "dolia-dummy-project.appspot.com"
-  },
-  "client": [
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:123456789012:android:abcdef0123456789abcdef",
-        "android_client_info": {
-          "package_name": "com.example"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "dummy_api_key_for_build"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
-    }
-  ],
-  "configuration_version": "1"
-}
-EOF
-            cp app/google-services.json ./google-services.json 2>/dev/null || true
-          fi
-
-          # 3. Buat debug.keystore jika belum ada (wajib untuk signing debug)
           if [ ! -f debug.keystore ]; then
-            echo "Membuat debug.keystore untuk proses signing debug..."
             keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
@@ -165,45 +96,20 @@ EOF
             cp debug.keystore app/debug.keystore 2>/dev/null || true
           fi
 
-          # 4. Optimasi gradle.properties untuk runner GitHub Actions
           if [ -f gradle.properties ]; then
-            echo "Menyesuaikan gradle.properties untuk runner GitHub Actions..."
             sed -i 's/-Xmx4g/-Xmx2048m/g' gradle.properties
             sed -i 's/org.gradle.configuration-cache=true/org.gradle.configuration-cache=false/g' gradle.properties
           fi
 
-      # 8. Setup Official Gradle 9.3.1
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      # 9. Build Android APK (Debug)
       - name: Build Android APK
         run: |
-          echo "Memulai build Android APK..."
-          set +e
-          gradle assembleDebug --no-daemon --no-configuration-cache --warning-mode=none 2>&1 | tee build_output.log
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
-          set -e
+          gradle assembleDebug --no-daemon --no-configuration-cache
 
-          if [ $BUILD_EXIT_CODE -ne 0 ]; then
-            echo ""
-            echo "============================================================"
-            echo "❌ BUILD GAGAL! RINGKASAN PENYEBAB MASALAH (ROOT CAUSE):"
-            echo "============================================================"
-            grep -A 25 -B 2 "FAILURE: Build failed" build_output.log || true
-            grep -A 30 -B 2 "\* What went wrong:" build_output.log || true
-            echo "============================================================"
-            echo "📋 40 BARIS TERAKHIR LOG BUILD:"
-            echo "============================================================"
-            tail -n 40 build_output.log
-            exit $BUILD_EXIT_CODE
-          fi
-
-          echo "✅ Build Android APK Berhasil!"
-
-      # 10. Upload APK Artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         if: always()
