@@ -71,16 +71,26 @@ jobs:
             cd server && npm install --silent || npm install && cd ..
           fi
 
-      # 5. Set up Java JDK 21 (v5)
+      # 5. Set up Java JDK 21
       - name: Set up Java JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      # 6. Set up Android SDK
+      # 6. Set up Android SDK & Lisensi
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Accept Android Licenses & Configure SDK Path
+        run: |
+          echo "Menyetujui lisensi Android SDK..."
+          yes | sdkmanager --licenses || true
+          echo "Mengonfigurasi local.properties..."
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          if [ -d app ]; then
+            echo "sdk.dir=$ANDROID_HOME" > app/local.properties
+          fi
 
       # 7. Setup Environment (.env & debug.keystore)
       - name: Setup Environment and Debug Keystore
@@ -92,9 +102,12 @@ jobs:
             echo "SUPABASE_URL=https://dummy.supabase.co" > .env
             echo "SUPABASE_ANON_KEY=dummy_anon_key" >> .env
           fi
+          if [ -d app ]; then
+            cp .env app/.env 2>/dev/null || true
+          fi
 
           if [ ! -f debug.keystore ]; then
-            echo "Membuat debug.keystore untuk signing debug..."
+            echo "Membuat debug.keystore untuk proses signing debug..."
             keytool -genkey -v \
               -keystore debug.keystore \
               -storepass android \
@@ -105,24 +118,23 @@ jobs:
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
           fi
-
-      # 8. Setup Gradle Wrapper
-      - name: Setup Gradle Wrapper
-        run: |
-          if [ ! -f gradlew ]; then
-            echo "gradlew tidak ditemukan, menginstal gradle dan men-generate wrapper..."
-            sudo apt-get update -qq && sudo apt-get install -y -qq gradle
-            gradle wrapper --gradle-version 9.3.1
+          if [ -d app ]; then
+            cp debug.keystore app/debug.keystore 2>/dev/null || true
           fi
-          chmod +x gradlew
+
+      # 8. Setup Official Gradle 9.3.1 (Aman tanpa apt-get)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
 
       # 9. Build Android APK (Debug)
       - name: Build Android APK
         run: |
           echo "Memulai build Android APK..."
-          ./gradlew assembleDebug --stacktrace --no-daemon
+          gradle assembleDebug --stacktrace --no-configuration-cache --no-daemon
 
-      # 10. Upload APK Artifact
+      # 10. Unggah APK Artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         if: always()
