@@ -28,10 +28,18 @@ jobs:
       # 1. Ekstrak ZIP secara otomatis jika Anda mengunggah arsip .zip ke repository
       - name: Extract Zip (if uploaded as archive)
         run: |
-          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" | head -n 1)
           if [ -n "$ZIP_FILE" ]; then
             echo "Menemukan arsip zip: $ZIP_FILE. Mengekstrak..."
-            unzip -o "$ZIP_FILE" -d .
+            unzip -q -o "$ZIP_FILE" -d .
+            if [ ! -d "app" ]; then
+              NESTED_APP=$(find . -maxdepth 2 -name "app" -type d | head -n 1)
+              if [ -n "$NESTED_APP" ]; then
+                NESTED_DIR=$(dirname "$NESTED_APP")
+                echo "Memindahkan file dari $NESTED_DIR ke root..."
+                cp -rn "$NESTED_DIR"/* . || true
+              fi
+            fi
           fi
 
       # 2. Setup Node.js v20
@@ -54,7 +62,13 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      # 5. Siapkan konfigurasi Android dan Injeksi Supabase ke .env
+      # 5. Setujui Lisensi Android SDK & Siapkan SDK 36
+      - name: Accept Android SDK Licenses & Prepare SDK 36
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" "build-tools;36.0.0" 2>/dev/null || true
+
+      # 6. Siapkan konfigurasi Android, Keystore, dan Supabase .env
       - name: Prepare Android Project & Supabase Config
         env:
           SECRET_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -71,6 +85,7 @@ jobs:
           echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
           echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
 
+          # Siapkan .env Supabase
           FINAL_URL="${INPUT_SUPABASE_URL:-${SECRET_SUPABASE_URL}}"
           FINAL_KEY="${INPUT_SUPABASE_ANON_KEY:-${SECRET_SUPABASE_ANON_KEY}}"
 
@@ -85,21 +100,36 @@ jobs:
             fi
           fi
 
-          if [ ! -f debug.keystore ] && [ -f debug.keystore.base64 ]; then
+          # Siapkan debug.keystore (Decode base64 dengan aman)
+          if [ -f debug.keystore.base64 ]; then
             echo "Decoding debug.keystore dari base64..."
-            base64 -d debug.keystore.base64 > debug.keystore
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore 2>/dev/null || true
+          fi
+
+          # Pastikan file debug.keystore valid dan tidak 0 byte
+          if [ ! -s debug.keystore ]; then
+            echo "Membuat debug.keystore default dengan keytool..."
+            keytool -genkey -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
           fi
 
           if [ -f gradlew ]; then
             chmod +x gradlew
           fi
 
-      # 6. Kompilasi dan Build APK Debug
+      # 7. Kompilasi dan Build APK Debug
       - name: Build Android APK
         run: |
-          gradle assembleDebug --stacktrace
+          gradle assembleDebug --no-daemon --no-configuration-cache --stacktrace
 
-      # 7. Upload APK ke tab Artifacts GitHub agar bisa langsung diunduh
+      # 8. Upload APK ke tab Artifacts GitHub agar bisa langsung diunduh
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
