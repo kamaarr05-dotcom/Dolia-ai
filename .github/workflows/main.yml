@@ -33,7 +33,7 @@ jobs:
             done
             echo "Ekstraksi ZIP selesai."
           else
-            echo "Tidak ditemukan file ZIP terkompresi. Menggunakan struktur repositori saat ini."
+            echo "Tidak ditemukan file ZIP terkompresi. Menggunakan struktur repository saat ini."
           fi
 
           echo "=== 2. Menormalisasi posisi build.gradle.kts ==="
@@ -58,7 +58,7 @@ jobs:
         with:
           node-version: '20'
 
-      # 4. Install dependensi Node.js jika ada
+      # 4. Install Node.js dependencies jika ada
       - name: Install Node.js Dependencies
         run: |
           echo "Versi Node: $(node -v)"
@@ -78,23 +78,28 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      # 6. Set up Android SDK & Lisensi
+      # 6. Set up Android SDK & Pasang Platform 36
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android Licenses & Configure SDK Path
+      - name: Configure Android SDK & Install Platform 36
         run: |
           echo "Menyetujui lisensi Android SDK..."
           yes | sdkmanager --licenses || true
+
+          echo "Menginstal platform android-36 dan build-tools..."
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools" || true
+
           echo "Mengonfigurasi local.properties..."
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           if [ -d app ]; then
             echo "sdk.dir=$ANDROID_HOME" > app/local.properties
           fi
 
-      # 7. Setup Environment (.env & debug.keystore)
-      - name: Setup Environment and Debug Keystore
+      # 7. Setup Environment (.env, google-services.json & debug.keystore)
+      - name: Setup Environment and Keystore
         run: |
+          # 1. Setup .env
           if [ ! -f .env ] && [ -f .env.example ]; then
             echo "Menyiapkan file .env dari .env.example..."
             cp .env.example .env
@@ -106,9 +111,47 @@ jobs:
             cp .env app/.env 2>/dev/null || true
           fi
 
+          # 2. Setup dummy google-services.json jika belum ada
+          if [ ! -f google-services.json ] && [ ! -f app/google-services.json ]; then
+            echo "Membuat dummy google-services.json..."
+            cat << 'EOF' > app/google-services.json
+{
+  "project_info": {
+    "project_number": "123456789012",
+    "project_id": "dolia-dummy-project",
+    "storage_bucket": "dolia-dummy-project.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:123456789012:android:abcdef0123456789abcdef",
+        "android_client_info": {
+          "package_name": "com.example"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "dummy_api_key_for_build"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
+EOF
+            cp app/google-services.json ./google-services.json 2>/dev/null || true
+          fi
+
+          # 3. Buat debug.keystore jika belum ada (wajib untuk signing debug)
           if [ ! -f debug.keystore ]; then
             echo "Membuat debug.keystore untuk proses signing debug..."
-            keytool -genkey -v \
+            keytool -genkeypair -v \
               -keystore debug.keystore \
               -storepass android \
               -alias androiddebugkey \
@@ -122,7 +165,14 @@ jobs:
             cp debug.keystore app/debug.keystore 2>/dev/null || true
           fi
 
-      # 8. Setup Official Gradle 9.3.1 (Aman tanpa apt-get)
+          # 4. Optimasi gradle.properties untuk runner GitHub Actions
+          if [ -f gradle.properties ]; then
+            echo "Menyesuaikan gradle.properties untuk runner GitHub Actions..."
+            sed -i 's/-Xmx4g/-Xmx2048m/g' gradle.properties
+            sed -i 's/org.gradle.configuration-cache=true/org.gradle.configuration-cache=false/g' gradle.properties
+          fi
+
+      # 8. Setup Official Gradle 9.3.1
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -132,9 +182,28 @@ jobs:
       - name: Build Android APK
         run: |
           echo "Memulai build Android APK..."
-          gradle assembleDebug --stacktrace --no-configuration-cache --no-daemon
+          set +e
+          gradle assembleDebug --no-daemon --no-configuration-cache --warning-mode=none 2>&1 | tee build_output.log
+          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+          set -e
 
-      # 10. Unggah APK Artifact
+          if [ $BUILD_EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "============================================================"
+            echo "❌ BUILD GAGAL! RINGKASAN PENYEBAB MASALAH (ROOT CAUSE):"
+            echo "============================================================"
+            grep -A 25 -B 2 "FAILURE: Build failed" build_output.log || true
+            grep -A 30 -B 2 "\* What went wrong:" build_output.log || true
+            echo "============================================================"
+            echo "📋 40 BARIS TERAKHIR LOG BUILD:"
+            echo "============================================================"
+            tail -n 40 build_output.log
+            exit $BUILD_EXIT_CODE
+          fi
+
+          echo "✅ Build Android APK Berhasil!"
+
+      # 10. Upload APK Artifact
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         if: always()
