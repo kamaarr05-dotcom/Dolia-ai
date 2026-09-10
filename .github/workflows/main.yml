@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+
   pull_request:
     branches:
       - main
@@ -13,16 +14,16 @@ on:
   workflow_dispatch:
     inputs:
       supabase_url:
-        description: 'Supabase URL (contoh: https://xyz.supabase.co)'
+        description: "Supabase URL"
         required: false
         type: string
-        default: ''
+        default: ""
 
       supabase_anon_key:
-        description: 'Supabase Anon Key'
+        description: "Supabase Anon Key"
         required: false
         type: string
-        default: ''
+        default: ""
 
 permissions:
   contents: read
@@ -33,7 +34,7 @@ concurrency:
 
 env:
   GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
-  GRADLE_OPTS: '-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2'
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.workers.max=2"
 
 jobs:
   build:
@@ -81,11 +82,11 @@ jobs:
 
           if [ -z "$PROJECT_ROOT" ]; then
             echo "ERROR: Root project Gradle tidak ditemukan di dalam ZIP."
-            find "$TMP_DIR" -maxdepth 3 -type f | sort | head -n 100
+            find "$TMP_DIR" -maxdepth 4 -type f | sort | head -n 100
             exit 1
           fi
 
-          if [ ! -f "$PROJECT_ROOT/settings.gradle.kts" ] &&
+          if [ ! -f "$PROJECT_ROOT/settings.gradle.kts" ] && \
              [ ! -f "$PROJECT_ROOT/settings.gradle" ]; then
             echo "ERROR: settings.gradle(.kts) tidak ditemukan."
             exit 1
@@ -109,7 +110,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ ! -f "settings.gradle.kts" ] &&
+          if [ ! -f "settings.gradle.kts" ] && \
              [ ! -f "settings.gradle" ]; then
             echo "ERROR: settings.gradle(.kts) tidak ditemukan."
             exit 1
@@ -126,27 +127,25 @@ jobs:
 
       # =========================================================
       # 4. JAVA 17
-      # AGP 9.1.1 menggunakan JDK 17
       # =========================================================
       - name: Set up Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
 
       # =========================================================
       # 5. GRADLE 9.3.1
-      # Sesuai AGP 9.1.1
       # =========================================================
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v6
         with:
-          gradle-version: '9.3.1'
+          gradle-version: "9.3.1"
           cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       # =========================================================
-      # 6. BUAT GRADLE WRAPPER JIKA BELUM ADA
+      # 6. BUAT / VALIDASI GRADLE WRAPPER
       # =========================================================
       - name: Create or validate Gradle Wrapper
         shell: bash
@@ -170,9 +169,9 @@ jobs:
           ./gradlew --version
 
       # =========================================================
-      # 7. ANDROID SDK 36.1
+      # 7. ANDROID SDK
       # =========================================================
-      - name: Prepare Android SDK 36.1
+      - name: Prepare Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -193,8 +192,8 @@ jobs:
 
           "$SDKMANAGER" \
             "platform-tools" \
-            "platforms;android-36.1" \
-            "build-tools;36.1.0"
+            "platforms;android-36" \
+            "build-tools;36.0.0"
 
       # =========================================================
       # 8. SUPABASE ENV
@@ -214,32 +213,35 @@ jobs:
           FINAL_URL="${INPUT_SUPABASE_URL:-${SECRET_SUPABASE_URL:-}}"
           FINAL_KEY="${INPUT_SUPABASE_ANON_KEY:-${SECRET_SUPABASE_ANON_KEY:-}}"
 
-          if [ -n "$FINAL_URL" ] &&
-             [ -n "$FINAL_KEY" ]; then
+          echo "Memeriksa konfigurasi Supabase..."
 
-            printf \
-              'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
-              "$FINAL_URL" \
-              "$FINAL_KEY" \
-              > .env
-
-            echo "Supabase .env berhasil disiapkan."
-
-          elif [ -f ".env.example" ]; then
-
-            cp .env.example .env
-
-            echo "Supabase secret/input tidak tersedia."
-            echo "Menggunakan .env.example."
-
-          else
-
-            : > .env
-
-            echo "Supabase secret/input tidak tersedia."
-            echo "Membuat .env kosong."
-
+          if [ -z "$FINAL_URL" ]; then
+            echo "ERROR: SUPABASE_URL belum tersedia."
+            echo "Pasang GitHub Secret SUPABASE_URL atau isi input workflow_dispatch."
+            exit 1
           fi
+
+          if [ -z "$FINAL_KEY" ]; then
+            echo "ERROR: SUPABASE_ANON_KEY belum tersedia."
+            echo "Pasang GitHub Secret SUPABASE_ANON_KEY atau isi input workflow_dispatch."
+            exit 1
+          fi
+
+          case "$FINAL_URL" in
+            https://*)
+              ;;
+            *)
+              echo "ERROR: SUPABASE_URL harus menggunakan HTTPS."
+              exit 1
+              ;;
+          esac
+
+          printf 'SUPABASE_URL=%s\nSUPABASE_ANON_KEY=%s\n' \
+            "$FINAL_URL" \
+            "$FINAL_KEY" \
+            > .env
+
+          echo "Supabase .env berhasil disiapkan."
 
       # =========================================================
       # 9. DEBUG KEYSTORE
@@ -250,17 +252,14 @@ jobs:
           set -euo pipefail
 
           if [ -f "debug.keystore.base64" ]; then
-
             echo "Decode debug.keystore..."
 
             tr -d '\r\n ' \
               < debug.keystore.base64 |
               base64 -d > debug.keystore
-
           fi
 
           if [ ! -s "debug.keystore" ]; then
-
             echo "Membuat debug.keystore baru..."
 
             keytool -genkeypair -v \
@@ -272,7 +271,6 @@ jobs:
               -keysize 2048 \
               -validity 10000 \
               -dname "CN=Android Debug,O=Android,C=US"
-
           fi
 
           chmod +x gradlew
